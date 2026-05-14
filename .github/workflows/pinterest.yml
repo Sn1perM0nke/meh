@@ -1,40 +1,33 @@
-name: Pinterest Image Test
+name: Pinterest Test
 
 on:
   workflow_dispatch:
     inputs:
       search_name:
-        description: "Pinterest search term"
         required: true
-        default: "cats"
-
+        default: cats
       image_amount:
-        description: "Number of images"
         required: true
-        default: "50"
+        default: "20"
 
 jobs:
-  download:
+  run:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install gallery-dl
-        run: |
-          sudo apt update
-          sudo apt install -y gallery-dl
+      - run: sudo apt update && sudo apt install -y gallery-dl
 
-      - name: Create download folder
-        run: mkdir -p download
+      - run: mkdir download
 
-      - name: Download Pinterest images
+      - name: Download images
         run: |
           SEARCH="${{ github.event.inputs.search_name }}"
           COUNT="${{ github.event.inputs.image_amount }}"
 
-          gallery-dl \
+          gallery-dl -v \
             --range 1-$COUNT \
+            --http-header "User-Agent: Mozilla/5.0" \
             -D download \
             "https://www.pinterest.com/search/pins/?q=$SEARCH"
 
-      - name: Show downloaded files
-        run: find download
+      - run: find download
