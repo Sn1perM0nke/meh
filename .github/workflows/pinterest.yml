@@ -20,8 +20,8 @@ jobs:
     steps:
       - name: Install gallery-dl
         run: |
-          python -m pip install --upgrade pip
-          pip install gallery-dl
+          sudo apt update
+          sudo apt install -y gallery-dl
 
       - name: Create download folder
         run: mkdir -p download
@@ -36,5 +36,5 @@ jobs:
             -D download \
             "https://www.pinterest.com/search/pins/?q=$SEARCH"
 
-      - name: Show files
+      - name: Show downloaded files
         run: find download
