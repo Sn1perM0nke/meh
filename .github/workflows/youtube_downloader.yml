@@ -69,91 +69,116 @@ jobs:
 
       - name: Retrieve media file
         run: |
-          URL="${{ github.event.inputs.video_url }}"
-          FORMAT="${{ github.event.inputs.output_format == 'mp3 (audio only)' && 'mp3' || 'mp4' }}"
-          QUAL="${{ github.event.inputs.desired_quality }}"
-          OUT_DIR="${{ github.event.inputs.output_folder }}"
-          JOB_ID="${{ github.event.inputs.job_id }}"
+          python3 << 'EOF'
+          import os, sys, time, re, requests
 
-          mkdir -p "$OUT_DIR"
+          URL  = os.environ.get('INPUT_URL')
+          FMT  = os.environ.get('INPUT_FORMAT')
+          QUAL = os.environ.get('INPUT_QUALITY')
+          OUT_DIR = os.environ.get('OUTPUT_DIR')
+          JOB_ID = os.environ.get('JOB_ID')
 
-          if [[ "$FORMAT" == "mp3" ]]; then
-            case "$QUAL" in
-              64kbps|128kbps|192kbps|320kbps) ;;
-              *) QUAL="192kbps" ;;
-            esac
+          os.makedirs(OUT_DIR, exist_ok=True)
 
-            JSON_PAYLOAD="{\"url\":\"$URL\",\"os\":\"linux\",\"output\":{\"type\":\"audio\",\"format\":\"mp3\"},\"audio\":{\"bitrate\":\"$QUAL\"}}"
+          is_audio = FMT == 'mp3'
 
-          else
-            case "$QUAL" in
-              144p|360p|480p|720p|1080p) ;;
-              *) QUAL="720p" ;;
-            esac
+          if is_audio:
+              QUAL = QUAL if QUAL in ('64kbps','128kbps','192kbps','320kbps') else '192kbps'
+          else:
+              QUAL = QUAL if QUAL in ('144p','360p','480p','720p','1080p') else '720p'
 
-            JSON_PAYLOAD="{\"url\":\"$URL\",\"os\":\"linux\",\"output\":{\"type\":\"video\",\"format\":\"mp4\",\"quality\":\"$QUAL\"}}"
-          fi
+          payload = {
+              "url": URL,
+              "os": "linux",
+              "output": {
+                  "type": "audio" if is_audio else "video",
+                  "format": FMT
+              }
+          }
 
-          RESPONSE=$(curl -s \
-            -H "User-Agent: Mozilla/5.0" \
-            -H "Content-Type: application/json" \
-            -d "$JSON_PAYLOAD" \
-            https://hub.ytconvert.org/api/download)
+          if is_audio:
+              payload["audio"] = {"bitrate": QUAL}
+          else:
+              payload["output"]["quality"] = QUAL
 
-          STATUS_URL=$(echo "$RESPONSE" | jq -r '.statusUrl')
-          TITLE=$(echo "$RESPONSE" | jq -r '.title // "unknown"')
+          s = requests.Session()
+          s.headers.update({
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+          })
 
-          if [[ -z "$STATUS_URL" || "$STATUS_URL" == "null" ]]; then
-            echo "$RESPONSE"
-            exit 1
-          fi
+          s.get("https://media.ytmp3.gg/")
 
-          DL=""
+          resp = s.post(
+              "https://hub.ytconvert.org/api/download",
+              json=payload,
+              timeout=30
+          )
 
-          for i in {1..60}; do
-            STATUS_RESPONSE=$(curl -s "$STATUS_URL")
+          resp.raise_for_status()
 
-            STATUS=$(echo "$STATUS_RESPONSE" | jq -r '.status')
+          data = resp.json()
 
-            if [[ "$STATUS" == "completed" ]]; then
-              DL=$(echo "$STATUS_RESPONSE" | jq -r '.downloadUrl')
-              break
-            fi
+          status_url = data.get("statusUrl")
+          title = data.get("title", "unknown")
 
-            if [[ "$STATUS" == "failed" ]]; then
-              echo "$STATUS_RESPONSE"
-              exit 1
-            fi
+          if not status_url:
+              print(data)
+              sys.exit(1)
 
-            sleep 1
-          done
+          dl_url = None
 
-          if [[ -z "$DL" || "$DL" == "null" ]]; then
-            exit 1
-          fi
+          for _ in range(150):
+              time.sleep(2)
 
-          V_ID=$(echo "$URL" | grep -oE '[a-zA-Z0-9_-]{11}' | head -1)
+              r = s.get(status_url, timeout=20)
+              status = r.json()
 
-          [[ -z "$V_ID" ]] && V_ID="unknown"
+              if status.get("status") == "completed":
+                  dl_url = status.get("downloadUrl")
+                  break
 
-          CLEAN_TITLE=$(echo "$TITLE" \
-            | tr ' ' '_' \
-            | tr -cd '[:alnum:]_-' \
-            | cut -c1-60)
+              if status.get("status") == "failed":
+                  print(status)
+                  sys.exit(1)
 
-          [[ -z "$CLEAN_TITLE" ]] && CLEAN_TITLE="$V_ID"
+          if not dl_url:
+              sys.exit(1)
 
-          BASE_FNAME="${CLEAN_TITLE}_${V_ID}_${QUAL}.${FORMAT}"
+          vid_match = re.search(r'(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})', URL)
+          V_ID = vid_match.group(1) if vid_match else "unknown"
 
-          if [[ -n "$JOB_ID" ]]; then
-            FILE_NAME="${JOB_ID}_${BASE_FNAME}"
-          else
-            FILE_NAME="$BASE_FNAME"
-          fi
+          clean = re.sub(r'[^a-zA-Z0-9\-_()\[\]]', '_', title.replace(' ', '_'))
+          clean = re.sub(r'_+', '_', clean).strip('_')[:60] or V_ID
 
-          curl -L "$DL" -o "$OUT_DIR/$FILE_NAME"
+          BASE_FNAME = f"{clean}_{V_ID}_{QUAL}.{FMT}"
 
-          echo "Downloaded: $FILE_NAME"
+          if JOB_ID:
+              FILE_NAME = f"{JOB_ID}_{BASE_FNAME}"
+          else:
+              FILE_NAME = BASE_FNAME
+
+          out_path = os.path.join(OUT_DIR, FILE_NAME)
+
+          with s.get(dl_url, stream=True) as r:
+              r.raise_for_status()
+
+              with open(out_path, "wb") as f:
+                  for chunk in r.iter_content(chunk_size=1024 * 1024):
+                      if chunk:
+                          f.write(chunk)
+
+          if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+              print("Downloaded file is empty")
+              sys.exit(1)
+
+          print(f"Downloaded: {FILE_NAME}")
+          EOF
+        env:
+          INPUT_URL: ${{ github.event.inputs.video_url }}
+          INPUT_FORMAT: ${{ github.event.inputs.output_format == 'mp3 (audio only)' && 'mp3' || 'mp4' }}
+          INPUT_QUALITY: ${{ github.event.inputs.desired_quality }}
+          OUTPUT_DIR: ${{ github.event.inputs.output_folder }}
+          JOB_ID: ${{ github.event.inputs.job_id }}
 
       - name: Push changes to repository
         run: |
