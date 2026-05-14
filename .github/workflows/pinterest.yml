@@ -1,28 +1,56 @@
-name: Pinterest Test
+name: Pinterest Debug Test
 
 on:
   workflow_dispatch:
     inputs:
       search_name:
+        description: "Search"
         required: true
-        default: cats
+        default: "cats"
+
       image_amount:
+        description: "Amount"
         required: true
-        default: "20"
+        default: "10"
 
 jobs:
-  run:
+  test:
     runs-on: ubuntu-latest
 
     steps:
-      - run: sudo apt update && sudo apt install -y gallery-dl
+      - name: System info
+        run: |
+          echo "Runner started"
+          python3 --version
+          uname -a
 
-      - run: mkdir download
+      - name: Install gallery-dl
+        run: |
+          set -x
+          sudo apt-get update
+          sudo apt-get install -y gallery-dl
+          which gallery-dl
+          gallery-dl --version
+
+      - name: Create folder
+        run: |
+          mkdir -p download
+          ls
+
+      - name: Test internet
+        run: |
+          curl -I https://www.google.com
+          curl -I https://www.pinterest.com
 
       - name: Download images
         run: |
+          set -x
+
           SEARCH="${{ github.event.inputs.search_name }}"
           COUNT="${{ github.event.inputs.image_amount }}"
+
+          echo "SEARCH=$SEARCH"
+          echo "COUNT=$COUNT"
 
           gallery-dl -v \
             --range 1-$COUNT \
@@ -30,4 +58,8 @@ jobs:
             -D download \
             "https://www.pinterest.com/search/pins/?q=$SEARCH"
 
-      - run: find download
+      - name: Show results
+        if: always()
+        run: |
+          echo "FILES:"
+          find download || true
